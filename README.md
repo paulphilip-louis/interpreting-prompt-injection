@@ -28,7 +28,7 @@ interpreting-prompt-injection/
 ├── notebooks/
 │   └── distraction_effect.ipynb       # measuring distraction effect
 │   └── activation_patching.ipynb      # activation patching experiments
-│   └── steering.ipynb                 # steering vector study
+│   └── steering_vectors.ipynb         # steering vector study
 │
 ├── results/
 │
