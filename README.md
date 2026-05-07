@@ -9,7 +9,7 @@ The reason behind is that the attack success rate of an injection can go from 0%
 
 In this work, I adopted a mechanistic interpretability-grounded approach to uncover possible internal mechanisms in an LLM that could explain what makes a model follow an injected instruction.
 
-## 1. Experiments and results
+## 1. Experiments
 
 First, I defined the following hypothesis:
 1. Appending an instruction-like string at the end of a prompt decreases significantly the focus score of that prompt
@@ -18,12 +18,40 @@ First, I defined the following hypothesis:
 
 ```notebooks/distraction_effect.ipynb``` verifies the 1. and 2. hypotheses.
 
+![image](public/focus_score.png)
+
 ```activation_patching.ipynb``` starts exploring a potential circuit involved in the success of the injection. Results point consistently across tasks towards a given set of heads. The mechanistic roles of the specific heads, as well as the existence of several subcircuits has not been investigated yet.
+
+![image](public/activation_patching.png)
 
 ```steering_vectors.ipynb``` investigates whether steering vectors could push a model towards/against following an injection, building on the strong difference in answers between absence of trigger and complex trigger. Early results point towards a shared direction that plays some role in the following of an injection.
 
+Below is the result of steering at various layers and its effect on attack success rate:
 
-## 2. Structure of the repository
+![image](public/steering.png)
+
+
+If we compute the cosine similarity between task-specific steering vectors, we get the following cosine table, showing not only an average off-diagonal similarity of 0.47, and an even greater similarity for tasks of similar nature, indicating two components of the steering direction.
+
+![image](public/cosine_similarity.png)
+
+## 2. Key results
+
+These results apply to Qwen2.5-1.5B-Instruct, and Llama3.2-3B-Instruct. Further experiments will come.
+
+- Adding an instruction-like string at the end of a prompt reduces its "focus score" (Definition: Hung et al., 2024), highlighting a distraction effect in the model.
+- However, distraction effect is not directly correlated with attack success rate, suggesting another mechanism than pure distraction incentivizing the model to follow the instruction
+- The **trigger** (context string surrounding the injected task; Pasquani et al., 2024) plays the most significant part, being capable of bringing the attack success rate of an injection from 0% to 100%.
+- When patching activations from a milder trigger to a more agressive one, a consistent subset of heads appears causally responsible of the success of the attack.
+- Steering vectors have a necessary and sufficient effect for a given task.
+- Study of steering vectors across tasks shows high cosine similarity of on average 0.47. Cosine similarity is higher between tasks of similar nature. 
+-> Steering vectors seem composed of a common direction linked with injection success, plus a task-specific direction.
+- Heads contributing the most to this direction overlap remarkably well with heads causally responsible of attack success.
+
+Below, a comparison :
+![image](public/head_comparison.png)
+
+## 3. Structure of the repository
 
 ```
 interpreting-prompt-injection/
@@ -44,12 +72,12 @@ interpreting-prompt-injection/
 └── .gitignore
 ```
 
-## 3. Installation
+## 4. Installation
 First make sure you have installed ```uv```.
 
 ```uv sync```.
 
-## 4. Utilisation
+## 5. Utilisation
 
 First ensure your environment is activated : 
 ```source .venv/bin/activate```
