@@ -1,7 +1,7 @@
 # interpreting-prompt-injection
 This is my research work on interpreting what makes a model follow another an injected task
 
-It builds on this [repository](https://github.com/paulphilip-louis/attention-tracker) which is a reimplementation of the [Attention Tracker](https://arxiv.org/abs/2411.00348) paper (Hung et al., 2024) as well as an extension and some extra experiments.
+This repo builds on [attention-tracker](https://github.com/paulphilip-louis/attention-tracker) (re-implementation of Hung et al.) and extends it with mechanistic interpretability methods
 
 The core idea of this research is that the [trigger](https://arxiv.org/abs/2403.03792) (a string surrounding the actual injected task, that aims at incentivizing the model to obey it, e.g "Ignore previous instructions") is a key element to understand *what* makes a model fall for prompt injection.
 
