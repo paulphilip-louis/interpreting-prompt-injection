@@ -96,6 +96,12 @@ At this stage, you can just run the notebooks and see the results for yourself.
 
 Once I will have developed a method to mechanistically limit prompt injection, I will add a script to run.
 
+## 6. Future directions
+- **Mechanistic roles of identified heads**: can we define a circuit or subcircuits and identify the relative roles of the heads ?
+- **Do Pasquini's neural execs push the residual stream in the same direction as OPI triggers ?** : if yes, this will be a favorable argument towards the uniqueness of this direction
+- **Robustness of the results** : do these results generalize to other families of models/other sizes of model?
+- **Defensive applications**: can steering against this direction provide a robust defense, or does it merely shift the attack surface?
+
 ## Tools
 
 PyTorch · transformer-lens · HuggingFace Transformers
