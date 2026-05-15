@@ -96,3 +96,14 @@ At this stage, you can just run the notebooks and see the results for yourself.
 
 Once I will have developed a method to mechanistically limit prompt injection, I will add a script to run.
 
+## Tools
+
+PyTorch · transformer-lens · HuggingFace Transformers
+
+## Citation
+
+If this work is useful to you, please reach out at paul-philip.louis@polytechnique.edu — I'd love to hear about related projects.
+
+## License
+
+MIT
