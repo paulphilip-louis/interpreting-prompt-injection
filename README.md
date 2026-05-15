@@ -1,6 +1,16 @@
-# interpreting-prompt-injection
-This is my research work on interpreting what makes a model follow another an injected task
+# Mechanistic Interpretability of Prompt Injection in LLMs
 
+> Identifying the circuits and directions that cause language models to follow injected instructions.
+
+## TL;DR
+
+- The **trigger** (e.g. "Ignore previous instructions") — not the injected task itself — is the dominant factor: changing it alone moves attack success rate from 0% to 100%.
+- Activation patching localizes a **consistent subset of attention heads** (layers 15-23 in Qwen2.5-1.5B-Instruct) causally responsible for this.
+- A **single linear direction** in the residual stream is both *sufficient* (0%→100% ASR) and *necessary* (100%→0%) for prompt injection for a given task.
+- This direction is partially **shared across tasks** (mean cosine 0.47), with a task-specific component on top.
+- Heads contributing to this direction **overlap with the heads identified by patching** — convergent evidence.
+
+## 0. Presentation
 This repo builds on [attention-tracker](https://github.com/paulphilip-louis/attention-tracker) (re-implementation of Hung et al.) and extends it with mechanistic interpretability methods
 
 The core idea of this research is that the [trigger](https://arxiv.org/abs/2403.03792) (a string surrounding the actual injected task, that aims at incentivizing the model to obey it, e.g "Ignore previous instructions") is a key element to understand *what* makes a model fall for prompt injection.
