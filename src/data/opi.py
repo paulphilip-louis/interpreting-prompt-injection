@@ -17,6 +17,20 @@ InjectedTask = Literal[
     "sentiment", "rte", "mrpc"
 ]
 
+original_str = {
+     "spam": "not spam",
+     "hsol": "no",
+     "rte" : "not entailment",
+     "mrpc" : "not equivalent"
+  }
+
+new_str = {
+     "spam": "legitimate",
+     "hsol": "no",
+     "rte" : "contradict",
+     "mrpc" : "distinct"
+  }
+
 def load_opi_dataset(split="train"):
     """Loads Open-Prompt_Injection dataset"""
     assert split=="train" or split=="test"
@@ -87,14 +101,15 @@ def get_formatted_chats(
     for row in filtered:
         attack_messages = [
                 {"role": "system", "content": row["instruction"]},
-                {"role": "user", "content": row["attack_input"]},
+                {"role": "user", "content": row["attack_input"].replace(original_str[injected_task], new_str[injected_task])},
             ]
         entry: dict = {
             "sample_id": row["sample_id"],
             "attack_chat": model.tokenizer.apply_chat_template(
                 attack_messages,
                 tokenize=False,
-                add_generation_prompt=True)
+                add_generation_prompt=True
+                )
         }
         if include_clean:
             clean_messages = [
@@ -115,6 +130,8 @@ def data_all_attack_types(dataset, model, task_type:TaskType, injected_task:Inje
   Returns dictionary of prompts lists per attack_type ("naive", "escape", "ignore", "combine", and "safe" if include_clean=True)
   """
   prompts = {}
+
+
 
   naive = get_formatted_chats(dataset, model, task_type=task_type, attack_type="naive", injected_task=injected_task, include_clean=include_clean)
   if include_clean:
