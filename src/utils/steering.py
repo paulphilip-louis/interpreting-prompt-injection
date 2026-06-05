@@ -125,8 +125,8 @@ def cross_steering_layer(model, prompts, task_residuals, train_tasks, test_tasks
                     make_steering_hook(v_train, coef=1))]
             logits, _ = cache_resid(model, target, batch_size=batch, fwd_hooks=hooks)
             m = compute_metrics(logits,
-                                "sentiment",
-                                tname)
+                                prompts[tname]['cor_ids'],
+                                prompts[tname]['inj_ids'])
             results[L][tname] = m
         print(f"L={L:>2}  " + "  ".join(
             f"{t}_ASR={results[L][t]['asr']:.2f}" for t in test_tasks)) 
@@ -190,33 +190,39 @@ def cross_steering_coef(model, prompts, task_residuals, train_tasks, test_tasks,
     results = {}
     for tname in test_tasks:
         print(tname, " ...")
-        results[tname] = {'asr':[], 'ld':[]}
+        results[tname] = {'asr':[], 'ld':[], 'mean_p_inj':[], 'mean_p_cor':[]}
         for coef in tqdm(coefs):
             target = prompts[tname]["prompts"]["naive"][:n_max]
             hooks = [(f"blocks.{layer}.hook_resid_post",
                     make_steering_hook(v_train, coef))]
             logits, _ = cache_resid(model, target, batch_size=batch, fwd_hooks=hooks)
             m = compute_metrics(logits,
-                                "sentiment",
-                                tname)
+                                prompts[tname]["cor_ids"],
+                                prompts[tname]["inj_ids"])
             results[tname]['asr'].append(m['asr'])
             results[tname]['ld'].append(m['mean_logit_diff'])
+            results[tname]['mean_p_inj'].append(m['mean_p_inj'])
+            results[tname]['mean_p_cor'].append(m['mean_p_cor'])
 
     if plotting:
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(1, 2, figsize=(13, 4))
         colors = ["tab:blue", "tab:orange"]
 
-        for tname in test_tasks:
-            axes[0].plot(coefs, results[tname]['asr'], label=tname)
+        for tname, color in zip(test_tasks, colors):
+            axes[0].plot(coefs, results[tname]['mean_p_inj'], label=f"{tname}:p_inj", linestyle='--', color=color)
+            axes[0].plot(coefs, results[tname]['mean_p_cor'], label=f"{tname}:p_cor", linestyle=':', color=color)
+            axes[0].set_ylabel("probability of inj/corr")
             axes[1].plot(coefs, results[tname]['ld'], label=tname)
+            axes[1].set_ylabel("logit difference")
 
         for ax in axes:
             ax.set_xlabel("Scale factor")
-            ax.set_ylabel("ASR")
+
             ax.legend()
         plt.suptitle("Effect of steering with respect to the scale factor")
         plt.show()
+
     
     return results
 
@@ -238,17 +244,19 @@ def cross_steering_cb(model, prompts, task_residuals, train_tasks, test_tasks, l
     results = {}
     for tname in test_tasks:
         print(tname, " ...")
-        results[tname] = {'asr':[], 'ld':[]}
+        results[tname] = {'asr':[], 'ld':[], 'mean_p_inj':[], 'mean_p_cor':[]}
         for coef in tqdm(coefs):
             target = prompts[tname]["prompts"]["combine"][:n_max]
             hooks = [(f"blocks.{layer}.hook_resid_post",
                     make_steering_hook(v_train, coef))]
             logits, _ = cache_resid(model, target, batch_size=batch, fwd_hooks=hooks)
             m = compute_metrics(logits,
-                                "sentiment",
-                                tname)
+                                prompts[tname]["cor_ids"],
+                                prompts[tname]["inj_ids"])
             results[tname]['asr'].append(m['asr'])
             results[tname]['ld'].append(m['mean_logit_diff'])
+            results[tname]['mean_p_inj'].append(m['mean_p_inj'])
+            results[tname]['mean_p_cor'].append(m['mean_p_cor'])
 
     if plotting:
         import matplotlib.pyplot as plt
@@ -264,9 +272,208 @@ def cross_steering_cb(model, prompts, task_residuals, train_tasks, test_tasks, l
 
         for ax in axes:
             ax.set_xlabel("Scale factor")
-            
+
             ax.legend()
         plt.suptitle("Effect of steering with respect to the scale factor")
         plt.show()
-    
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Experiment 5: instruction-span steering
+# ---------------------------------------------------------------------------
+
+def get_instruction_span(model, prompt_str, instruction_text):
+    """
+    Return (start_tok, end_tok) token indices (exclusive end) for `instruction_text`
+    within an already-formatted chat string.
+
+    Because instruction tokens precede the user turn, their residual stream is
+    identical across injection conditions (causal mask). This span can therefore
+    be used to apply an externally-computed steering vector without extracting one
+    from the instruction positions themselves.
+    """
+    enc = model.tokenizer(prompt_str, return_offsets_mapping=True)
+    offsets = enc["offset_mapping"]
+
+    char_start = prompt_str.find(instruction_text)
+    if char_start == -1:
+        raise ValueError("instruction_text not found in prompt_str")
+    char_end = char_start + len(instruction_text)
+
+    tok_start, tok_end = -1, -1
+    for idx, (i, j) in enumerate(offsets):
+        if tok_start == -1 and i <= char_start < j:
+            tok_start = idx
+        if i < char_end <= j:
+            tok_end = idx + 1  # exclusive
+    return tok_start, tok_end
+
+
+def make_steering_hook_span(vec, coef, start_pos, end_pos):
+    """Like make_steering_hook but applies to token positions [start_pos, end_pos)."""
+    def hook_fn(resid, hook):
+        resid[:, start_pos:end_pos, :] = resid[:, start_pos:end_pos, :] + coef * vec
+        return resid
+    return hook_fn
+
+
+def steer_instruction_span(model, prompts, steering_vec, layer, coefs,
+                           cor_ids, inj_ids, instruction_text, batch_size=4):
+    """
+    Sweep over `coefs`, applying `steering_vec` at instruction token positions
+    (identified via `instruction_text`) rather than at the last token.
+
+    Use a negative coefficient to push hard-trigger prompts toward the no-injection
+    residual distribution.
+
+    Args:
+        prompts:          list of formatted prompt strings (all sharing the same instruction)
+        steering_vec:     [d_model] tensor — typically the last-token diff-of-means
+        layer:            layer index at which to intervene
+        instruction_text: the raw instruction string to locate within formatted prompts
+
+    Returns:
+        {"asr": np.array [n_coefs], "ld": np.array [n_coefs]}
+    """
+    device = next(model.parameters()).device
+    vec = steering_vec.to(device)
+
+    tok_start, tok_end = get_instruction_span(model, prompts[0], instruction_text)
+
+    out = {"asr": np.zeros(len(coefs)), "ld": np.zeros(len(coefs))}
+    for j, c in enumerate(tqdm(coefs, desc="instruction-span steering")):
+        hook = make_steering_hook_span(vec, c, tok_start, tok_end)
+        logits, _ = cache_resid(model, prompts, batch_size=batch_size,
+                                fwd_hooks=[(f"blocks.{layer}.hook_resid_post", hook)])
+        m = compute_metrics(logits, cor_ids, inj_ids)
+        out["asr"][j] = m["asr"]
+        out["ld"][j] = m["mean_logit_diff"]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Experiment 6: shared vs task-specific vector decomposition
+# ---------------------------------------------------------------------------
+
+def decompose_steering_vecs(task_residuals, tasks, layer):
+    """
+    Decompose per-task diff-of-means steering vectors at `layer` into:
+      - shared direction: mean of unit vectors across tasks, renormalised
+      - task_specific:    orthogonal residual (v_task − projection onto shared)
+
+    The shared direction captures what is common to injection success across tasks.
+    The task-specific component is what causes cross-task contamination at high coefs.
+
+    Args:
+        task_residuals: {task: {"naive": {layer: [N, d_model]}, "combine": {layer: [N, d_model]}}}
+        tasks:          list of task names to include
+        layer:          which layer's residuals to use
+
+    Returns:
+        {
+          "shared":        tensor [d_model],             # unit vector
+          "task_vecs":     {task: tensor [d_model]},     # full diff-of-means per task
+          "task_specific": {task: tensor [d_model]},     # orthogonal residual
+          "projections":   {task: float},                # scalar projection onto shared
+        }
+    """
+    task_vecs = {
+        t: (task_residuals[t]["combine"][layer].mean(0)
+            - task_residuals[t]["naive"][layer].mean(0))
+        for t in tasks
+    }
+
+    stacked = torch.stack([task_vecs[t] for t in tasks])          # [T, d_model]
+    unit_vecs = stacked / stacked.norm(dim=-1, keepdim=True)      # normalise each
+
+    shared = unit_vecs.mean(0)
+    shared = shared / shared.norm()                                # renormalise
+
+    task_specific, projections = {}, {}
+    for t in tasks:
+        v = task_vecs[t]
+        proj_scalar = (v @ shared).item()
+        projections[t] = proj_scalar
+        task_specific[t] = v - proj_scalar * shared
+
+    return {
+        "shared": shared,
+        "task_vecs": task_vecs,
+        "task_specific": task_specific,
+        "projections": projections,
+    }
+
+
+def steer_decomposed_coef(model, prompts, decomp, test_tasks, layer, coefs,
+                          train_tasks=None, batch=4, n_max=50, plotting=True):
+    """
+    Compare full, shared-only, and task-specific-only steering on naive prompts.
+
+    The shared vector is scaled to match the norm of the full (mean) vector so
+    that coefficient values are comparable across conditions.
+
+    Args:
+        decomp:      output of decompose_steering_vecs
+        train_tasks: tasks used to build the full (mean) vector; defaults to all
+                     tasks present in decomp["task_vecs"]
+        test_tasks:  tasks to evaluate on
+
+    Returns:
+        {test_task: {"full": {"asr": [...], "ld": [...]},
+                     "shared": {...},
+                     "task_specific": {...}}}
+    """
+    device = next(model.parameters()).device
+    if train_tasks is None:
+        train_tasks = list(decomp["task_vecs"].keys())
+
+    # Full vector: mean of per-train-task diff-of-means
+    full_vec = torch.stack([decomp["task_vecs"][t] for t in train_tasks]).mean(0).to(device)
+    full_norm = full_vec.norm()
+
+    # Shared: unit vector scaled to full_vec norm
+    shared = decomp["shared"].to(device)
+    shared_vec = (shared * full_norm)
+
+    results = {}
+    for tname in test_tasks:
+        target = prompts[tname]["prompts"]["naive"][:n_max]
+        cor_ids = prompts[tname]["cor_ids"]
+        inj_ids = prompts[tname]["inj_ids"]
+        results[tname] = {
+            "full":          {"asr": [], "ld": []},
+            "shared":        {"asr": [], "ld": []},
+            "task_specific": {"asr": [], "ld": []},
+        }
+
+        # Task-specific vector for this test task (if available), else zeros
+        ts_vec = decomp["task_specific"].get(tname, torch.zeros_like(full_vec)).to(device)
+
+        for coef in tqdm(coefs, desc=f"decomposed steering [{tname}]"):
+            for label, vec in [("full", full_vec), ("shared", shared_vec), ("task_specific", ts_vec)]:
+                hook = make_steering_hook(vec, coef)
+                logits, _ = cache_resid(model, target, batch_size=batch,
+                                        fwd_hooks=[(f"blocks.{layer}.hook_resid_post", hook)])
+                m = compute_metrics(logits, cor_ids, inj_ids)
+                results[tname][label]["asr"].append(m["asr"])
+                results[tname][label]["ld"].append(m["mean_logit_diff"])
+
+    if plotting:
+        import matplotlib.pyplot as plt
+        n = len(test_tasks)
+        fig, axes = plt.subplots(n, 2, figsize=(13, 4 * n), squeeze=False)
+        styles = {"full": "-", "shared": "--", "task_specific": ":"}
+        for row, tname in enumerate(test_tasks):
+            for cond, ls in styles.items():
+                axes[row, 0].plot(coefs, results[tname][cond]["asr"],
+                                  label=cond, linestyle=ls)
+                axes[row, 1].plot(coefs, results[tname][cond]["ld"],
+                                  label=cond, linestyle=ls)
+            axes[row, 0].set(title=f"{tname} — ASR", xlabel="coef", ylabel="ASR")
+            axes[row, 1].set(title=f"{tname} — logit diff", xlabel="coef", ylabel="LD")
+            axes[row, 0].legend(); axes[row, 1].legend()
+        plt.tight_layout(); plt.show()
+
     return results
