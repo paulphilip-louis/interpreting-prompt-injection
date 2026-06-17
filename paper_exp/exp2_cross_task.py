@@ -19,6 +19,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from einops import einsum
 
 from src.utils.attention_tracker import load_model
 from src.data.opi import load_opi_per_task, INJECTIONS
@@ -28,6 +29,7 @@ from src.utils.steering import (
 from src.utils.utils import cosine_similarity
 from paper_exp.style import apply as apply_style, savefig, COLORS, TASK_LABELS
 
+
 apply_style()
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -35,6 +37,7 @@ MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 MODEL_TAG = MODEL_NAME.split("/")[-1]
 TASK = "sentiment"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(DEVICE)
 BATCH = 4
 N_TRAIN = 75
 N_TEST = 75
@@ -116,6 +119,7 @@ task_vecs = {inj: steering_vec_at(inj, CACHE_LAYERS) for inj in INJECTIONS}
 print("Computing baselines...")
 baselines = {}
 for inj in INJECTIONS:
+    print(f"Baseline for {inj}...")
     test_naive = prompts[inj]["prompts"]["naive"][N_TRAIN:N_TRAIN + N_TEST]
     test_combine = prompts[inj]["prompts"]["combine"][N_TRAIN:N_TRAIN + N_TEST]
     ln, _ = cache_resid(model, test_naive, BATCH)
@@ -168,7 +172,97 @@ savefig(fig, "fig7_loo_transfer")
 save_results({inj: loo[inj] for inj in INJECTIONS},
              f"{RESULTS_DIR}/fig7.json", coefs=COEFS, layer=PEAK_LAYER, boot_seed=BOOT_SEED)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Fig 8 — full diff-of-means vector vs only shared component
+# ══════════════════════════════════════════════════════════════════════════════
+print("\n── Fig 7: full vs shared ──")
+u_shared = t.stack([task_vecs[inj] for inj in INJECTIONS]).mean(0).to(DEVICE)
+u_shared = u_shared / u_shared.norm()
+full_res = {}
+shared_res = {}
+task_spec_res = {}
 
+for injection in INJECTIONS:
+    full_vec = task_vecs[injection]
+    shared_comp = t.dot(task_vecs[injection], u_shared) * u_shared
+    task_spec = full_vec - shared_comp
+
+    target = prompts[injection]["prompts"]["naive"][N_TRAIN:N_TRAIN+N_TEST]
+    cor, inj = prompts[injection]["cor_ids"], prompts[injection]["inj_ids"]
+
+    print("—— Steering with full diff-of-means vector ——")
+    asr_m, asr_lo, asr_hi, ld = [], [], [], []
+    for c in tqdm(COEFS, desc=f"fig8 full vs shared-{injection}"):
+        hooks = [(f"blocks.{PEAK_LAYER}.hook_resid_post", make_steering_hook(full_vec, c))]
+        logits, _ = cache_resid(model, target, BATCH, fwd_hooks=hooks)
+        per_ex = per_example_asr(logits, cor, inj).numpy()
+        m, lo, hi = bootstrap_ci(per_ex)
+        asr_m.append(m); asr_lo.append(lo); asr_hi.append(hi)
+        ld.append(compute_metrics(logits, cor, inj)["mean_logit_diff"])
+    full_res[injection] = {"asr": asr_m, "asr_lo": asr_lo, "asr_hi": asr_hi, "ld": ld}
+
+    print("—— Steering with shared component ——")
+    asr_m, asr_lo, asr_hi, ld = [], [], [], []
+    for c in tqdm(COEFS, desc=f"fig7 LOO-{held_out}"):
+        hooks = [(f"blocks.{PEAK_LAYER}.hook_resid_post", make_steering_hook(shared_comp, c))]
+        logits, _ = cache_resid(model, target, BATCH, fwd_hooks=hooks)
+        per_ex = per_example_asr(logits, cor, inj).numpy()
+        m, lo, hi = bootstrap_ci(per_ex)
+        asr_m.append(m); asr_lo.append(lo); asr_hi.append(hi)
+        ld.append(compute_metrics(logits, cor, inj)["mean_logit_diff"])
+    shared_res[injection] = {"asr": asr_m, "asr_lo": asr_lo, "asr_hi": asr_hi, "ld": ld}
+
+    print("—— Steering with task-specific component ——")
+    asr_m, asr_lo, asr_hi, ld = [], [], [], []
+    for c in tqdm(COEFS, desc=f"fig7 LOO-{held_out}"):
+        hooks = [(f"blocks.{PEAK_LAYER}.hook_resid_post", make_steering_hook(task_spec, c))]
+        logits, _ = cache_resid(model, target, BATCH, fwd_hooks=hooks)
+        per_ex = per_example_asr(logits, cor, inj).numpy()
+        m, lo, hi = bootstrap_ci(per_ex)
+        asr_m.append(m); asr_lo.append(lo); asr_hi.append(hi)
+        ld.append(compute_metrics(logits, cor, inj)["mean_logit_diff"])
+    task_spec_res[injection] = {"asr": asr_m, "asr_lo": asr_lo, "asr_hi": asr_hi, "ld": ld}
+
+STYLES = {"full": "-", "shared": "--", "task_spec": ":"}
+STYLE_LABELS = {"full": "Full v", "shared": "Shared component", "task_spec": "Task-specific component"}
+
+fig, axes = plt.subplots(len(INJECTIONS), 2, figsize=(11, 3.5 * len(INJECTIONS)),
+                         sharex=True, sharey="col")
+
+for idx, inj in enumerate(INJECTIONS):
+    col = COLORS[inj]
+    ax_asr, ax_ld = axes[idx][0], axes[idx][1]
+
+    for key, res in [("full", full_res), ("shared", shared_res), ("task_spec", task_spec_res)]:
+        ls = STYLES[key]
+        label = STYLE_LABELS[key] if idx == 0 else None   # legend only on top row
+        ax_asr.plot(COEFS, res[inj]["asr"], color=col, ls=ls, label=label)
+        ax_asr.fill_between(COEFS, res[inj]["asr_lo"], res[inj]["asr_hi"],
+                            color=col, alpha=0.10)
+        ax_ld.plot(COEFS, res[inj]["ld"], color=col, ls=ls)
+
+    # Baselines as edge markers
+    ax_asr.plot(COEFS[0], baselines[inj]["naive"], marker="o", mfc="none", mec=col, ms=6, zorder=5)
+    ax_asr.plot(COEFS[-1], baselines[inj]["combine"], marker="*", color=col, ms=11, zorder=5)
+    ax_asr.set_ylim(-0.05, 1.05)
+    ax_asr.set_ylabel("ASR")
+    ax_ld.set_ylabel("Mean logit diff")
+    ax_asr.set_title(f"{TASK_LABELS[inj]}", fontsize=10)
+
+# Shared legend on top row only
+axes[0][0].legend(fontsize=8)
+# Marker legend entries (once)
+axes[0][0].plot([], [], marker="o", mfc="none", mec="gray", ls="none", label="naive baseline")
+axes[0][0].plot([], [], marker="*", color="gray", ls="none", label="combine baseline")
+axes[0][0].legend(fontsize=8)
+
+for ax in axes[-1]:
+    ax.set_xlabel("Steering coefficient")
+
+fig.suptitle(f"Full vs shared vs task-specific steering (L={PEAK_LAYER})", y=1.01)
+savefig(fig, "fig8_shared_vs_taskspecific")
+save_results({"full": full_res, "shared": shared_res, "task_spec": task_spec_res},
+             f"{RESULTS_DIR}/fig8.json", coefs=COEFS, layer=PEAK_LAYER, boot_seed=BOOT_SEED)
 # ══════════════════════════════════════════════════════════════════════════════
 # Table 1 — Cosine matrix over ALL injection tasks, grouped by family
 # ══════════════════════════════════════════════════════════════════════════════
