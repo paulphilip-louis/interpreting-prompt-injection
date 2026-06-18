@@ -37,43 +37,13 @@ from src.utils.steering import (
 )
 from src.utils.utils import cosine_similarity
 from paper_exp.style import apply as apply_style, savefig, COLORS, TASK_LABELS
-
+from paper_exp.constants import MODEL_NAME
 apply_style()
 
-# ── Settings ──────────────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+# ── Load model ─────────────────────────────────────────────────────────
 MODEL_TAG = MODEL_NAME.split("/")[-1]
-TASK = "sentiment"
-INJ = "spam"
-ALL_INJ = INJECTIONS
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BATCH = 4
-N_TRAIN = 75
-N_TEST = 75
-N_RANDOM_SEEDS = 10
-BOOT_SEED = 0
-PEAK_LAYER = 21
-N_LAYERS = 28
-N_SPAN_EXAMPLES = 50          # fig6 runs at batch=1; cap the number of prompts
 
-COEFS = np.arange(-1, 5, 0.5).tolist()
-COEFS_WINDOW = np.arange(-1, 5, 0.3).tolist()
-
-LAYERS_GROSS = list(range(0, N_LAYERS, 4))
-LAYERS_FINE = list(range(12, N_LAYERS, 2))
-
-TRIGGERS = ["safe", "naive", "escape", "ignore", "combine", "neural_exec", "random"]
-
-RESULTS_DIR = "results/exp1"
-CACHE_DIR = "results/cache"
-FIG_DIR = "paper_exp/figures"
-for d in (RESULTS_DIR, CACHE_DIR, FIG_DIR):
-    os.makedirs(d, exist_ok=True)
-
-ALL_LAYERS = list(range(N_LAYERS))
-
-
-# ── Load model & data ─────────────────────────────────────────────────────────
 print("Loading model...")
 model = load_model(MODEL_NAME)
 
@@ -88,10 +58,41 @@ PAD_TAG = "padL"
 # (add_special_tokens=False + cfg.default_prepend_bos).
 BOS_OFFSET = int(getattr(model.cfg, "default_prepend_bos", False))
 
+# ── Load data ─────────────────────────────────────────────────────────
+TASK = "sentiment"
+INJ = "spam"
+ALL_INJ = INJECTIONS
+
 print("Loading data...")
 prompts = load_opi_per_task(model, TASK)
 cor_ids = prompts[INJ]["cor_ids"]
 inj_ids = prompts[INJ]["inj_ids"]
+
+# ── Experimental settings ─────────────────────────────────────────────
+BATCH = 4
+N_TRAIN = 75
+N_TEST = 75
+N_RANDOM_SEEDS = 10
+BOOT_SEED = 0
+PEAK_LAYER = 24
+N_LAYERS = model.cfg.n_layers
+N_SPAN_EXAMPLES = 50          # fig6 runs at batch=1; cap the number of prompts
+
+COEFS = np.arange(-1, 5, 0.5).tolist()
+COEFS_WINDOW = np.arange(-1, 5, 0.3).tolist()
+
+LAYERS_GROSS = list(range(0, N_LAYERS, 4))
+LAYERS_FINE = list(range(14, N_LAYERS, 2))
+
+TRIGGERS = ["safe", "naive", "escape", "ignore", "combine", "neural_exec", "random"]
+
+RESULTS_DIR = "results_llama/exp1"
+CACHE_DIR = "results_llama/cache"
+FIG_DIR = "paper_exp/figures_llama"
+for d in (RESULTS_DIR, CACHE_DIR, FIG_DIR):
+    os.makedirs(d, exist_ok=True)
+
+ALL_LAYERS = list(range(N_LAYERS))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
