@@ -28,46 +28,64 @@ from src.utils.steering import (
 )
 from src.utils.utils import cosine_similarity
 from paper_exp.style import apply as apply_style, savefig, COLORS, TASK_LABELS
-
+from paper_exp.constants import MODEL_NAME
 
 apply_style()
 
-# ── Settings ──────────────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+# ── Load model ─────────────────────────────────────────────────────────
 MODEL_TAG = MODEL_NAME.split("/")[-1]
-TASK = "sentiment"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(DEVICE)
-BATCH = 4
-N_TRAIN = 75
-N_TEST = 75
-BOOT_SEED = 0
-PEAK_LAYER = 21
-N_LAYERS = 28
 
-COEFS = np.arange(-0.5, 3.5, 0.5).tolist()
-CACHE_LAYERS = list(range(N_LAYERS))
-
-# Table ordering: keep families adjacent (free-form | spam/hsol | rte/mrpc).
-COSINE_ORDER = ["gigaword", "jfleg", "spam", "hsol", "rte", "mrpc"]
-
-RESULTS_DIR = "results/exp2"
-CACHE_DIR = "results/cache"
-for d in (RESULTS_DIR, CACHE_DIR):
-    os.makedirs(d, exist_ok=True)
-
-
-# ── Load model & data ─────────────────────────────────────────────────────────
 print("Loading model...")
 model = load_model(MODEL_NAME)
 
+# Force LEFT padding so the last position is always the real last token.
 model.tokenizer.padding_side = "left"
 if model.tokenizer.pad_token is None:
     model.tokenizer.pad_token = model.tokenizer.eos_token
 PAD_TAG = "padL"
 
+# Does the forward path prepend a BOS? (TransformerLens cfg). Token spans for
+# fig6 are shifted by this. Verify this matches cache_resid's tokenization
+# (add_special_tokens=False + cfg.default_prepend_bos).
+BOS_OFFSET = int(getattr(model.cfg, "default_prepend_bos", False))
+
+# ── Load data ─────────────────────────────────────────────────────────
+TASK = "sentiment"
+INJ = "spam"
+ALL_INJ = INJECTIONS
+
 print("Loading data...")
 prompts = load_opi_per_task(model, TASK)
+cor_ids = prompts[INJ]["cor_ids"]
+inj_ids = prompts[INJ]["inj_ids"]
+
+# ── Experimental settings ─────────────────────────────────────────────
+BATCH = 4
+N_TRAIN = 75
+N_TEST = 75
+N_RANDOM_SEEDS = 10
+BOOT_SEED = 0
+PEAK_LAYER = 24
+N_LAYERS = model.cfg.n_layers
+N_SPAN_EXAMPLES = 50          # fig6 runs at batch=1; cap the number of prompts
+
+COEFS = np.arange(-0.5, 3.5, 0.5).tolist()
+
+CACHE_LAYERS = list(range(N_LAYERS))
+
+TRIGGERS = ["safe", "naive", "escape", "ignore", "combine", "neural_exec", "random"]
+
+# Table ordering: keep families adjacent (free-form | spam/hsol | rte/mrpc).
+COSINE_ORDER = ["gigaword", "jfleg", "spam", "hsol", "rte", "mrpc"]
+
+RESULTS_DIR = "results_llama/exp2"
+CACHE_DIR = "results_llama/cache"
+FIG_DIR = "paper_exp/figures_llama"
+for d in (RESULTS_DIR, CACHE_DIR, FIG_DIR):
+    os.makedirs(d, exist_ok=True)
+
+ALL_LAYERS = list(range(N_LAYERS))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -176,7 +194,7 @@ save_results({inj: loo[inj] for inj in INJECTIONS},
 # Fig 8 — full diff-of-means vector vs only shared component
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n── Fig 7: full vs shared ──")
-u_shared = t.stack([task_vecs[inj] for inj in INJECTIONS]).mean(0).to(DEVICE)
+u_shared = torch.stack([task_vecs[inj] for inj in INJECTIONS]).mean(0).to(DEVICE)
 u_shared = u_shared / u_shared.norm()
 full_res = {}
 shared_res = {}
@@ -184,7 +202,7 @@ task_spec_res = {}
 
 for injection in INJECTIONS:
     full_vec = task_vecs[injection]
-    shared_comp = t.dot(task_vecs[injection], u_shared) * u_shared
+    shared_comp = torch.dot(task_vecs[injection], u_shared) * u_shared
     task_spec = full_vec - shared_comp
 
     target = prompts[injection]["prompts"]["naive"][N_TRAIN:N_TRAIN+N_TEST]

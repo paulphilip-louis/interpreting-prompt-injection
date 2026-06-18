@@ -43,7 +43,7 @@ def apply():
     })
 
 
-def savefig(fig, name, folder="paper_exp/figures"):
+def savefig(fig, name, folder="paper_exp/figures_llama"):
     """Save as both PDF (vector) and PNG."""
     for ext in ("pdf", "png"):
         fig.savefig(f"{folder}/{name}.{ext}")

@@ -31,42 +31,54 @@ from src.utils.steering import (
 )
 from src.utils.utils import cosine_similarity
 from paper_exp.style import apply as apply_style, savefig, COLORS, TASK_LABELS
+from paper_exp.constants import MODEL_NAME
 
 apply_style()
 
-# ── Settings ──────────────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+# ── Load model ─────────────────────────────────────────────────────────
 MODEL_TAG = MODEL_NAME.split("/")[-1]
-TASK = "sentiment"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BATCH = 4
-N_TRAIN = 75
-N_TEST = 75
-BOOT_SEED = 0
-PEAK_LAYER = 21
-N_LAYERS = 28
-COEFS = np.arange(-1, 5, 0.5).tolist()
-ONSET_THRESH = 0.5
 
-CONDITIONS = ["naive", "combine", "neural_exec", "random"]
-RESULTS_DIR = "results/exp4"
-CACHE_DIR = "results/cache"
-for d in (RESULTS_DIR, CACHE_DIR):
-    os.makedirs(d, exist_ok=True)
-ALL_LAYERS = list(range(N_LAYERS))
-
-
-# ── Load model & data ─────────────────────────────────────────────────────────
 print("Loading model...")
 model = load_model(MODEL_NAME)
 
+# Force LEFT padding so the last position is always the real last token.
 model.tokenizer.padding_side = "left"
 if model.tokenizer.pad_token is None:
     model.tokenizer.pad_token = model.tokenizer.eos_token
 PAD_TAG = "padL"
 
+# Does the forward path prepend a BOS? (TransformerLens cfg). Token spans for
+# fig6 are shifted by this. Verify this matches cache_resid's tokenization
+# (add_special_tokens=False + cfg.default_prepend_bos).
+BOS_OFFSET = int(getattr(model.cfg, "default_prepend_bos", False))
+
+# ── Load data ─────────────────────────────────────────────────────────
+TASK = "sentiment"
+INJ = "spam"
+ALL_INJ = INJECTIONS
+
 print("Loading data...")
 prompts = load_opi_per_task(model, TASK)
+cor_ids = prompts[INJ]["cor_ids"]
+inj_ids = prompts[INJ]["inj_ids"]
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+BATCH = 4
+N_TRAIN = 75
+N_TEST = 75
+BOOT_SEED = 0
+PEAK_LAYER = 22
+N_LAYERS = model.cfg.n_layers
+COEFS = np.arange(-1, 5, 0.5).tolist()
+ONSET_THRESH = 0.5
+
+CONDITIONS = ["naive", "combine", "neural_exec", "random"]
+RESULTS_DIR = "results_llama/exp4"
+CACHE_DIR = "results_llama/cache"
+for d in (RESULTS_DIR, CACHE_DIR):
+    os.makedirs(d, exist_ok=True)
+ALL_LAYERS = list(range(N_LAYERS))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -37,18 +37,38 @@ from src.utils.steering import (
 )
 from src.utils.utils import to_first_token_ids, cosine_similarity
 from paper_exp.style import apply as apply_style, savefig
+from paper_exp.constants import MODEL_NAME
 
 apply_style()
 
-# ── Settings ──────────────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+
+# ── Load model ─────────────────────────────────────────────────────────
 MODEL_TAG = MODEL_NAME.split("/")[-1]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print("Loading model...")
+model = load_model(MODEL_NAME)
+
+# Force LEFT padding so the last position is always the real last token.
+model.tokenizer.padding_side = "left"
+if model.tokenizer.pad_token is None:
+    model.tokenizer.pad_token = model.tokenizer.eos_token
+PAD_TAG = "padL"
+
+# Does the forward path prepend a BOS? (TransformerLens cfg). Token spans for
+# fig6 are shifted by this. Verify this matches cache_resid's tokenization
+# (add_special_tokens=False + cfg.default_prepend_bos).
+BOS_OFFSET = int(getattr(model.cfg, "default_prepend_bos", False))
+
+print("Loading data...")
+opi_ds = load_opi_dataset()
+
+# ── Settings ──────────────────────────────────────────────────────────────────
 BATCH = 4
 N_TRAIN = 75
 N_TEST = 75
 BOOT_SEED = 0
-PEAK_LAYER = 21
+PEAK_LAYER = 22
 
 FIXED_INJ = "spam"
 MAIN_TASKS = ["sentiment", "hsol", "rte", "mrpc"]   # legitimate task; injection fixed
@@ -61,22 +81,10 @@ MT_COLORS = {"sentiment": "#3a7ca5", "hsol": "#d1495b",
              "rte": "#66a182", "mrpc": "#e09f3e"}
 MT_LABEL = {"sentiment": "Sentiment", "hsol": "HateSpeech", "rte": "RTE", "mrpc": "MRPC"}
 
-RESULTS_DIR = "results/exp5"
-CACHE_DIR = "results/cache"
+RESULTS_DIR = "results_llama/exp5"
+CACHE_DIR = "results_llama/cache"
 for d in (RESULTS_DIR, CACHE_DIR):
     os.makedirs(d, exist_ok=True)
-
-
-# ── Load model & data ─────────────────────────────────────────────────────────
-print("Loading model...")
-model = load_model(MODEL_NAME)
-
-model.tokenizer.padding_side = "left"
-if model.tokenizer.pad_token is None:
-    model.tokenizer.pad_token = model.tokenizer.eos_token
-PAD_TAG = "padL"
-
-opi_ds = load_opi_dataset()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

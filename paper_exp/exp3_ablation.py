@@ -29,28 +29,54 @@ from src.utils.steering import (
     cache_resid, compute_metrics, diff_of_means, make_steering_hook, save_results,
 )
 from paper_exp.style import apply as apply_style, savefig, COLORS, TASK_LABELS
- 
+from paper_exp.constants import MODEL_NAME
+
 apply_style()
+
+# ── Load model ─────────────────────────────────────────────────────────
+MODEL_TAG = MODEL_NAME.split("/")[-1]
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print("Loading model...")
+model = load_model(MODEL_NAME)
+
+# Force LEFT padding so the last position is always the real last token.
+model.tokenizer.padding_side = "left"
+if model.tokenizer.pad_token is None:
+    model.tokenizer.pad_token = model.tokenizer.eos_token
+PAD_TAG = "padL"
+
+# Does the forward path prepend a BOS? (TransformerLens cfg). Token spans for
+# fig6 are shifted by this. Verify this matches cache_resid's tokenization
+# (add_special_tokens=False + cfg.default_prepend_bos).
+BOS_OFFSET = int(getattr(model.cfg, "default_prepend_bos", False))
+
+# ── Load data ─────────────────────────────────────────────────────────
+TASK = "sentiment"
+INJ = "spam"
+ALL_INJ = INJECTIONS
+
+print("Loading data...")
+prompts = load_opi_per_task(model, TASK)
+cor_ids = prompts[INJ]["cor_ids"]
+inj_ids = prompts[INJ]["inj_ids"]
+
  
 # ── Settings ──────────────────────────────────────────────────────────────────
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-MODEL_TAG = MODEL_NAME.split("/")[-1]
-TASK = "sentiment"
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH = 4
 N_TRAIN = 75
 N_TEST = 75
 N_POOL = N_TRAIN + N_TEST          # cache once, resample train/test inside
-PEAK_LAYER = 21
-N_LAYERS = 28
-CLAMP_FROM = 18
+PEAK_LAYER = 22
+N_LAYERS = model.cfg.n_layers
+CLAMP_FROM = 21
  
 COEFS = [0, -0.5, -1, -1.5, -2, -2.5, -3]
 SOURCE_TASKS = ["spam", "mrpc"]
 SEEDS = [0, 1, 2]                  # extraction+eval split seeds for error bars
  
-RESULTS_DIR = "results/exp3"
-CACHE_DIR = "results/cache"
+RESULTS_DIR = "results_llama/exp3"
+CACHE_DIR = "results_llama/cache"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
  
@@ -123,12 +149,7 @@ def split_for_seed(seed, n_pool=N_POOL):
 def fmt(mean, std):
     return f"{mean:.3f} ± {std:.3f}"
  
- 
-# ── Load model & data ─────────────────────────────────────────────────────────
-print("Loading model & data ...")
-model = model = load_model(MODEL_NAME)
-prompts = load_opi_per_task(model, TASK)
- 
+
 # Cache the full pool once per task; seeds resample indices into it.
 print("Caching pooled residuals (once per task) ...")
 pool_resids, pool_combine_prompts = {}, {}
@@ -220,7 +241,7 @@ ax.set_title("Necessity — two distinct interventions (mean ± std over "
              f"{len(SEEDS)} seeds)", pad=12)
 fig.text(0.5, 0.02,
          "Clamp = projection forced to naive mean at every layer L18+ (no coef). "
-         "Neg-steer = additive c·v at L21; c=-3 overshoots → OOD.",
+         f"Neg-steer = additive c·v at L{PEAK_LAYER}; c=-3 overshoots → OOD.",
          ha="center", fontsize=8, color="gray")
 savefig(fig, "tab2_method_comparison")
  
@@ -244,7 +265,7 @@ for inj in INJECTIONS:
     ax.fill_between(COEFS, m - s, m + s, color=COLORS[inj], alpha=0.15)
 ax.axhline(0.5, ls=":", color="gray", lw=0.8)
 ax.set(xlabel="Negative steering coefficient", ylabel="ASR",
-       title="Within-task additive ablation on combine prompts (L21)")
+       title=f"Within-task additive ablation on combine prompts (L{PEAK_LAYER})")
 ax.set_ylim(-0.05, 1.05); ax.legend()
 savefig(fig, "fig9a_within_task_sweep")
 save_results({inj: {"asr_mean": sweep_m[inj].tolist(), "asr_std": sweep_s[inj].tolist()}
